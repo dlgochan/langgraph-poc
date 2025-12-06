@@ -93,8 +93,221 @@ const deleteDataTool = tool(
   }
 );
 
+// 날짜 파싱 Tool - 자연어 날짜 표현을 실제 날짜로 변환
+const parseDateTool = tool(
+  async ({ dateExpression }) => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dayOfWeek = today.getDay(); // 0=일, 1=월, ..., 6=토
+
+    const expr = dateExpression.toLowerCase().trim();
+    let result: Date | null = null;
+    let description = '';
+
+    // 오늘, 내일, 모레, 어제, 그저께
+    if (expr.includes('오늘')) {
+      result = today;
+      description = '오늘';
+    } else if (expr.includes('내일')) {
+      result = new Date(today);
+      result.setDate(result.getDate() + 1);
+      description = '내일';
+    } else if (expr.includes('모레')) {
+      result = new Date(today);
+      result.setDate(result.getDate() + 2);
+      description = '모레';
+    } else if (expr.includes('글피')) {
+      result = new Date(today);
+      result.setDate(result.getDate() + 3);
+      description = '글피';
+    } else if (expr.includes('어제')) {
+      result = new Date(today);
+      result.setDate(result.getDate() - 1);
+      description = '어제';
+    } else if (expr.includes('그저께') || expr.includes('그제')) {
+      result = new Date(today);
+      result.setDate(result.getDate() - 2);
+      description = '그저께';
+    }
+    // 이번주/다음주/지난주 + 요일
+    else if (expr.includes('주') && /[월화수목금토일]요일?/.test(expr)) {
+      const dayMatch = expr.match(/([월화수목금토일])요일?/);
+      if (dayMatch) {
+        const dayMap: Record<string, number> = {
+          일: 0,
+          월: 1,
+          화: 2,
+          수: 3,
+          목: 4,
+          금: 5,
+          토: 6,
+        };
+        const targetDay = dayMap[dayMatch[1]];
+
+        result = new Date(today);
+        let diff = targetDay - dayOfWeek;
+
+        if (expr.includes('다음주') || expr.includes('다음 주')) {
+          // 다음주: 무조건 7일 후의 해당 요일
+          diff = diff + 7;
+          if (diff > 7) diff -= 7;
+          diff += 7 - (diff > 0 ? 7 : 0);
+          result.setDate(result.getDate() + ((7 - dayOfWeek + targetDay) % 7) + 7);
+          // 더 간단하게
+          result = new Date(today);
+          result.setDate(result.getDate() + 7 - dayOfWeek + targetDay);
+          if (targetDay <= dayOfWeek) {
+            result.setDate(result.getDate());
+          } else {
+            result.setDate(today.getDate() + 7 + (targetDay - dayOfWeek));
+          }
+          // 재계산
+          result = new Date(today);
+          const daysUntilTarget = (targetDay - dayOfWeek + 7) % 7 || 7;
+          result.setDate(result.getDate() + daysUntilTarget + 7);
+          description = `다음주 ${dayMatch[1]}요일`;
+        } else if (expr.includes('지난주') || expr.includes('지난 주')) {
+          result = new Date(today);
+          const daysAgo = (dayOfWeek - targetDay + 7) % 7 || 7;
+          result.setDate(result.getDate() - daysAgo - 7);
+          description = `지난주 ${dayMatch[1]}요일`;
+        } else if (expr.includes('이번주') || expr.includes('이번 주')) {
+          result = new Date(today);
+          result.setDate(result.getDate() + (targetDay - dayOfWeek));
+          description = `이번주 ${dayMatch[1]}요일`;
+        } else {
+          // 그냥 요일만 있으면 다가오는 해당 요일
+          result = new Date(today);
+          const daysUntil = (targetDay - dayOfWeek + 7) % 7 || 7;
+          result.setDate(result.getDate() + daysUntil);
+          description = `다가오는 ${dayMatch[1]}요일`;
+        }
+      }
+    }
+    // N일 후/전
+    else if (/(\d+)\s*일\s*(후|뒤|전)/.test(expr)) {
+      const match = expr.match(/(\d+)\s*일\s*(후|뒤|전)/);
+      if (match) {
+        const days = parseInt(match[1]);
+        result = new Date(today);
+        if (match[2] === '전') {
+          result.setDate(result.getDate() - days);
+          description = `${days}일 전`;
+        } else {
+          result.setDate(result.getDate() + days);
+          description = `${days}일 후`;
+        }
+      }
+    }
+    // N주 후/전
+    else if (/(\d+)\s*주\s*(후|뒤|전)/.test(expr)) {
+      const match = expr.match(/(\d+)\s*주\s*(후|뒤|전)/);
+      if (match) {
+        const weeks = parseInt(match[1]);
+        result = new Date(today);
+        if (match[2] === '전') {
+          result.setDate(result.getDate() - weeks * 7);
+          description = `${weeks}주 전`;
+        } else {
+          result.setDate(result.getDate() + weeks * 7);
+          description = `${weeks}주 후`;
+        }
+      }
+    }
+    // N개월 후/전
+    else if (/(\d+)\s*개?월\s*(후|뒤|전)/.test(expr)) {
+      const match = expr.match(/(\d+)\s*개?월\s*(후|뒤|전)/);
+      if (match) {
+        const months = parseInt(match[1]);
+        result = new Date(today);
+        if (match[2] === '전') {
+          result.setMonth(result.getMonth() - months);
+          description = `${months}개월 전`;
+        } else {
+          result.setMonth(result.getMonth() + months);
+          description = `${months}개월 후`;
+        }
+      }
+    }
+    // 내년/작년/올해 + 월
+    else if (/(내년|작년|올해|금년)/.test(expr)) {
+      result = new Date(today);
+      if (expr.includes('내년')) {
+        result.setFullYear(result.getFullYear() + 1);
+        description = '내년';
+      } else if (expr.includes('작년')) {
+        result.setFullYear(result.getFullYear() - 1);
+        description = '작년';
+      } else {
+        description = '올해';
+      }
+
+      // 월 파싱
+      const monthMatch = expr.match(/(\d+)\s*월/);
+      if (monthMatch) {
+        result.setMonth(parseInt(monthMatch[1]) - 1);
+        result.setDate(1);
+        description += ` ${monthMatch[1]}월`;
+      }
+
+      // 일 파싱
+      const dayMatch = expr.match(/(\d+)\s*일/);
+      if (dayMatch) {
+        result.setDate(parseInt(dayMatch[1]));
+        description += ` ${dayMatch[1]}일`;
+      }
+    }
+    // 다음달/이번달/지난달
+    else if (/(다음\s?달|이번\s?달|지난\s?달)/.test(expr)) {
+      result = new Date(today);
+      if (expr.includes('다음')) {
+        result.setMonth(result.getMonth() + 1);
+        description = '다음달';
+      } else if (expr.includes('지난')) {
+        result.setMonth(result.getMonth() - 1);
+        description = '지난달';
+      } else {
+        description = '이번달';
+      }
+
+      // 일 파싱
+      const dayMatch = expr.match(/(\d+)\s*일/);
+      if (dayMatch) {
+        result.setDate(parseInt(dayMatch[1]));
+        description += ` ${dayMatch[1]}일`;
+      } else {
+        result.setDate(1);
+      }
+    }
+
+    if (result) {
+      const year = result.getFullYear();
+      const month = String(result.getMonth() + 1).padStart(2, '0');
+      const day = String(result.getDate()).padStart(2, '0');
+      const weekDays = ['일', '월', '화', '수', '목', '금', '토'];
+      const weekDay = weekDays[result.getDay()];
+
+      return `📅 "${dateExpression}" 파싱 결과:
+- 날짜: ${year}-${month}-${day} (${weekDay}요일)
+- 해석: ${description}
+- 오늘 기준: ${today.toISOString().split('T')[0]} (${weekDays[today.getDay()]}요일)`;
+    }
+
+    return `❌ "${dateExpression}"를 날짜로 파싱할 수 없습니다.
+지원하는 표현: 오늘, 내일, 모레, 어제, 그저께, 다음주 월요일, 3일 후, 2주 전, 내년 3월, 다음달 15일 등`;
+  },
+  {
+    name: 'parse_date',
+    description:
+      '자연어 날짜 표현을 실제 날짜로 변환합니다. 예: "다음주 월요일", "내일", "그저께", "내년 3월", "3일 후", "다음달 15일" 등',
+    schema: z.object({
+      dateExpression: z.string().describe('파싱할 자연어 날짜 표현 (예: "다음주 월요일", "내년 3월 15일")'),
+    }),
+  }
+);
+
 // 모든 Tool 목록
-const tools = [calculatorTool, getCurrentTimeTool, searchTool, saveDataTool, deleteDataTool];
+const tools = [calculatorTool, getCurrentTimeTool, searchTool, saveDataTool, deleteDataTool, parseDateTool];
 
 // OpenAI LLM 인스턴스 (Tool 바인딩 포함)
 const llm = new ChatOpenAI({
@@ -228,7 +441,9 @@ async function executeAction(state: WorkflowStateType): Promise<Partial<Workflow
       role: 'system',
       content: `당신은 사용자의 요청을 수행하는 AI 어시스턴트입니다.
 주어진 Tool들을 사용하여 작업을 완료하세요.
-사용 가능한 Tool: calculator, get_current_time, search, save_data, delete_data
+사용 가능한 Tool: calculator, get_current_time, search, save_data, delete_data, parse_date
+
+날짜 관련 요청이 있으면 반드시 parse_date Tool을 사용하세요.
 
 작업 계획:
 ${actionPlan}`,
@@ -264,6 +479,9 @@ ${actionPlan}`,
           break;
         case 'delete_data':
           result = await deleteDataTool.invoke({ key: toolArgs.key });
+          break;
+        case 'parse_date':
+          result = await parseDateTool.invoke({ dateExpression: toolArgs.dateExpression });
           break;
         default:
           result = `알 수 없는 Tool: ${toolName}`;
