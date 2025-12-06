@@ -1,14 +1,8 @@
 /**
- * LangGraph HITL API 클라이언트
- *
- * Next.js API Routes를 호출합니다.
+ * Chat API 클라이언트
  */
 
-import type {
-  StartWorkflowResponse,
-  WorkflowStatusResponse,
-  ResumeWorkflowResponse,
-} from '@/types/workflow';
+import type { ChatResponse } from '@/types/chat';
 
 class APIError extends Error {
   constructor(
@@ -29,50 +23,33 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 /**
- * 새 워크플로우를 시작합니다.
+ * 메시지 전송
  */
-export async function startWorkflow(message: string): Promise<StartWorkflowResponse> {
-  const response = await fetch('/api/workflow/start', {
+export async function sendMessage(
+  message: string,
+  threadId?: string
+): Promise<ChatResponse> {
+  const response = await fetch('/api/chat', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ message }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, threadId }),
   });
-
-  return handleResponse<StartWorkflowResponse>(response);
+  return handleResponse<ChatResponse>(response);
 }
 
 /**
- * 워크플로우 상태를 조회합니다.
+ * 승인/거부 처리
  */
-export async function getWorkflowStatus(threadId: string): Promise<WorkflowStatusResponse> {
-  const response = await fetch(`/api/workflow/${threadId}/status`, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
-
-  return handleResponse<WorkflowStatusResponse>(response);
-}
-
-/**
- * 중단된 워크플로우를 재개합니다.
- */
-export async function resumeWorkflow(
+export async function submitApproval(
   threadId: string,
-  decision: 'approve' | 'reject'
-): Promise<ResumeWorkflowResponse> {
-  const response = await fetch(`/api/workflow/${threadId}/resume`, {
+  approved: boolean
+): Promise<ChatResponse> {
+  const response = await fetch('/api/chat', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ decision }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ threadId, approved }),
   });
-
-  return handleResponse<ResumeWorkflowResponse>(response);
+  return handleResponse<ChatResponse>(response);
 }
 
 export { APIError };
