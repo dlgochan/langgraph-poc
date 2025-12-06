@@ -7,6 +7,316 @@
 
 import { StateGraph, START, END, Annotation, interrupt, Command } from '@langchain/langgraph';
 import { MemorySaver } from '@langchain/langgraph';
+import { ChatOpenAI } from '@langchain/openai';
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage } from '@langchain/core/messages';
+
+// ===== Tool 정의 =====
+
+// 계산기 Tool
+const calculatorTool = tool(
+  async ({ expression }) => {
+    try {
+      // 간단한 수식 계산 (실제 운영에서는 더 안전한 방법 사용)
+      const result = Function(`"use strict"; return (${expression})`)();
+      return `계산 결과: ${expression} = ${result}`;
+    } catch {
+      return `계산 오류: "${expression}"는 유효한 수식이 아닙니다.`;
+    }
+  },
+  {
+    name: 'calculator',
+    description: '수학 계산을 수행합니다. 덧셈, 뺄셈, 곱셈, 나눗셈 등의 수식을 계산할 수 있습니다.',
+    schema: z.object({
+      expression: z.string().describe('계산할 수식 (예: "2 + 3 * 4")'),
+    }),
+  }
+);
+
+// 현재 시간 조회 Tool
+const getCurrentTimeTool = tool(
+  async () => {
+    const now = new Date();
+    return `현재 시간: ${now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`;
+  },
+  {
+    name: 'get_current_time',
+    description: '현재 날짜와 시간을 조회합니다.',
+    schema: z.object({}),
+  }
+);
+
+// 검색 Tool (시뮬레이션)
+const searchTool = tool(
+  async ({ query }) => {
+    // 실제로는 외부 API 호출
+    return `"${query}"에 대한 검색 결과:\n1. ${query} 관련 문서 1\n2. ${query} 관련 문서 2\n3. ${query} 관련 문서 3`;
+  },
+  {
+    name: 'search',
+    description: '정보를 검색합니다. 질문이나 키워드로 관련 정보를 찾을 수 있습니다.',
+    schema: z.object({
+      query: z.string().describe('검색할 질문이나 키워드'),
+    }),
+  }
+);
+
+// 데이터 저장 Tool (시뮬레이션)
+const saveDataTool = tool(
+  async ({ key, value }) => {
+    // 실제로는 DB에 저장
+    return `데이터 저장 완료: "${key}" = "${value}"`;
+  },
+  {
+    name: 'save_data',
+    description: '데이터를 저장합니다.',
+    schema: z.object({
+      key: z.string().describe('저장할 데이터의 키'),
+      value: z.string().describe('저장할 데이터의 값'),
+    }),
+  }
+);
+
+// 데이터 삭제 Tool (시뮬레이션)
+const deleteDataTool = tool(
+  async ({ key }) => {
+    // 실제로는 DB에서 삭제
+    return `데이터 삭제 완료: "${key}"`;
+  },
+  {
+    name: 'delete_data',
+    description: '데이터를 삭제합니다.',
+    schema: z.object({
+      key: z.string().describe('삭제할 데이터의 키'),
+    }),
+  }
+);
+
+// 날짜 파싱 Tool - 자연어 날짜 표현을 실제 날짜로 변환
+const parseDateTool = tool(
+  async ({ dateExpression }) => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dayOfWeek = today.getDay(); // 0=일, 1=월, ..., 6=토
+
+    const expr = dateExpression.toLowerCase().trim();
+    let result: Date | null = null;
+    let description = '';
+
+    // 오늘, 내일, 모레, 어제, 그저께
+    if (expr.includes('오늘')) {
+      result = today;
+      description = '오늘';
+    } else if (expr.includes('내일')) {
+      result = new Date(today);
+      result.setDate(result.getDate() + 1);
+      description = '내일';
+    } else if (expr.includes('모레')) {
+      result = new Date(today);
+      result.setDate(result.getDate() + 2);
+      description = '모레';
+    } else if (expr.includes('글피')) {
+      result = new Date(today);
+      result.setDate(result.getDate() + 3);
+      description = '글피';
+    } else if (expr.includes('어제')) {
+      result = new Date(today);
+      result.setDate(result.getDate() - 1);
+      description = '어제';
+    } else if (expr.includes('그저께') || expr.includes('그제')) {
+      result = new Date(today);
+      result.setDate(result.getDate() - 2);
+      description = '그저께';
+    }
+    // 이번주/다음주/지난주 + 요일
+    else if (expr.includes('주') && /[월화수목금토일]요일?/.test(expr)) {
+      const dayMatch = expr.match(/([월화수목금토일])요일?/);
+      if (dayMatch) {
+        const dayMap: Record<string, number> = {
+          일: 0,
+          월: 1,
+          화: 2,
+          수: 3,
+          목: 4,
+          금: 5,
+          토: 6,
+        };
+        const targetDay = dayMap[dayMatch[1]];
+
+        result = new Date(today);
+        let diff = targetDay - dayOfWeek;
+
+        if (expr.includes('다음주') || expr.includes('다음 주')) {
+          // 다음주: 무조건 7일 후의 해당 요일
+          diff = diff + 7;
+          if (diff > 7) diff -= 7;
+          diff += 7 - (diff > 0 ? 7 : 0);
+          result.setDate(result.getDate() + ((7 - dayOfWeek + targetDay) % 7) + 7);
+          // 더 간단하게
+          result = new Date(today);
+          result.setDate(result.getDate() + 7 - dayOfWeek + targetDay);
+          if (targetDay <= dayOfWeek) {
+            result.setDate(result.getDate());
+          } else {
+            result.setDate(today.getDate() + 7 + (targetDay - dayOfWeek));
+          }
+          // 재계산
+          result = new Date(today);
+          const daysUntilTarget = (targetDay - dayOfWeek + 7) % 7 || 7;
+          result.setDate(result.getDate() + daysUntilTarget + 7);
+          description = `다음주 ${dayMatch[1]}요일`;
+        } else if (expr.includes('지난주') || expr.includes('지난 주')) {
+          result = new Date(today);
+          const daysAgo = (dayOfWeek - targetDay + 7) % 7 || 7;
+          result.setDate(result.getDate() - daysAgo - 7);
+          description = `지난주 ${dayMatch[1]}요일`;
+        } else if (expr.includes('이번주') || expr.includes('이번 주')) {
+          result = new Date(today);
+          result.setDate(result.getDate() + (targetDay - dayOfWeek));
+          description = `이번주 ${dayMatch[1]}요일`;
+        } else {
+          // 그냥 요일만 있으면 다가오는 해당 요일
+          result = new Date(today);
+          const daysUntil = (targetDay - dayOfWeek + 7) % 7 || 7;
+          result.setDate(result.getDate() + daysUntil);
+          description = `다가오는 ${dayMatch[1]}요일`;
+        }
+      }
+    }
+    // N일 후/전
+    else if (/(\d+)\s*일\s*(후|뒤|전)/.test(expr)) {
+      const match = expr.match(/(\d+)\s*일\s*(후|뒤|전)/);
+      if (match) {
+        const days = parseInt(match[1]);
+        result = new Date(today);
+        if (match[2] === '전') {
+          result.setDate(result.getDate() - days);
+          description = `${days}일 전`;
+        } else {
+          result.setDate(result.getDate() + days);
+          description = `${days}일 후`;
+        }
+      }
+    }
+    // N주 후/전
+    else if (/(\d+)\s*주\s*(후|뒤|전)/.test(expr)) {
+      const match = expr.match(/(\d+)\s*주\s*(후|뒤|전)/);
+      if (match) {
+        const weeks = parseInt(match[1]);
+        result = new Date(today);
+        if (match[2] === '전') {
+          result.setDate(result.getDate() - weeks * 7);
+          description = `${weeks}주 전`;
+        } else {
+          result.setDate(result.getDate() + weeks * 7);
+          description = `${weeks}주 후`;
+        }
+      }
+    }
+    // N개월 후/전
+    else if (/(\d+)\s*개?월\s*(후|뒤|전)/.test(expr)) {
+      const match = expr.match(/(\d+)\s*개?월\s*(후|뒤|전)/);
+      if (match) {
+        const months = parseInt(match[1]);
+        result = new Date(today);
+        if (match[2] === '전') {
+          result.setMonth(result.getMonth() - months);
+          description = `${months}개월 전`;
+        } else {
+          result.setMonth(result.getMonth() + months);
+          description = `${months}개월 후`;
+        }
+      }
+    }
+    // 내년/작년/올해 + 월
+    else if (/(내년|작년|올해|금년)/.test(expr)) {
+      result = new Date(today);
+      if (expr.includes('내년')) {
+        result.setFullYear(result.getFullYear() + 1);
+        description = '내년';
+      } else if (expr.includes('작년')) {
+        result.setFullYear(result.getFullYear() - 1);
+        description = '작년';
+      } else {
+        description = '올해';
+      }
+
+      // 월 파싱
+      const monthMatch = expr.match(/(\d+)\s*월/);
+      if (monthMatch) {
+        result.setMonth(parseInt(monthMatch[1]) - 1);
+        result.setDate(1);
+        description += ` ${monthMatch[1]}월`;
+      }
+
+      // 일 파싱
+      const dayMatch = expr.match(/(\d+)\s*일/);
+      if (dayMatch) {
+        result.setDate(parseInt(dayMatch[1]));
+        description += ` ${dayMatch[1]}일`;
+      }
+    }
+    // 다음달/이번달/지난달
+    else if (/(다음\s?달|이번\s?달|지난\s?달)/.test(expr)) {
+      result = new Date(today);
+      if (expr.includes('다음')) {
+        result.setMonth(result.getMonth() + 1);
+        description = '다음달';
+      } else if (expr.includes('지난')) {
+        result.setMonth(result.getMonth() - 1);
+        description = '지난달';
+      } else {
+        description = '이번달';
+      }
+
+      // 일 파싱
+      const dayMatch = expr.match(/(\d+)\s*일/);
+      if (dayMatch) {
+        result.setDate(parseInt(dayMatch[1]));
+        description += ` ${dayMatch[1]}일`;
+      } else {
+        result.setDate(1);
+      }
+    }
+
+    if (result) {
+      const year = result.getFullYear();
+      const month = String(result.getMonth() + 1).padStart(2, '0');
+      const day = String(result.getDate()).padStart(2, '0');
+      const weekDays = ['일', '월', '화', '수', '목', '금', '토'];
+      const weekDay = weekDays[result.getDay()];
+
+      return `📅 "${dateExpression}" 파싱 결과:
+- 날짜: ${year}-${month}-${day} (${weekDay}요일)
+- 해석: ${description}
+- 오늘 기준: ${today.toISOString().split('T')[0]} (${weekDays[today.getDay()]}요일)`;
+    }
+
+    return `❌ "${dateExpression}"를 날짜로 파싱할 수 없습니다.
+지원하는 표현: 오늘, 내일, 모레, 어제, 그저께, 다음주 월요일, 3일 후, 2주 전, 내년 3월, 다음달 15일 등`;
+  },
+  {
+    name: 'parse_date',
+    description:
+      '자연어 날짜 표현을 실제 날짜로 변환합니다. 예: "다음주 월요일", "내일", "그저께", "내년 3월", "3일 후", "다음달 15일" 등',
+    schema: z.object({
+      dateExpression: z.string().describe('파싱할 자연어 날짜 표현 (예: "다음주 월요일", "내년 3월 15일")'),
+    }),
+  }
+);
+
+// 모든 Tool 목록
+const tools = [calculatorTool, getCurrentTimeTool, searchTool, saveDataTool, deleteDataTool, parseDateTool];
+
+// OpenAI LLM 인스턴스 (Tool 바인딩 포함)
+const llm = new ChatOpenAI({
+  modelName: 'gpt-4o-mini',
+  temperature: 0.7,
+});
+
+// Tool이 바인딩된 LLM
+const llmWithTools = llm.bindTools(tools);
 
 // 상태 스키마 정의
 export const WorkflowState = Annotation.Root({
@@ -16,49 +326,82 @@ export const WorkflowState = Annotation.Root({
   approved: Annotation<boolean | null>(),
   result: Annotation<string>(),
   currentStep: Annotation<string>(),
+  // Agent Loop을 위한 메시지 히스토리 (BaseMessage[] 타입)
+  messages: Annotation<BaseMessage[]>({
+    reducer: (prev, next) => [...prev, ...next],
+    default: () => [],
+  }),
 });
 
 export type WorkflowStateType = typeof WorkflowState.State;
 
 /**
  * 사용자 요청을 분석하여 작업 유형을 결정합니다.
+ * OpenAI LLM을 사용하여 의도를 파악합니다.
  */
-function analyzeRequest(state: WorkflowStateType): Partial<WorkflowStateType> {
-  const userMessage = state.userMessage.toLowerCase();
+async function analyzeRequest(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const userMessage = state.userMessage;
 
-  let taskType: string;
+  const response = await llm.invoke([
+    {
+      role: 'system',
+      content: `당신은 사용자 요청을 분석하는 AI입니다.
+사용자의 요청을 분석하여 다음 중 하나의 작업 유형을 반환하세요:
+- destructive: 삭제, 제거, 드롭 등 위험한 작업
+- create: 생성, 만들기, 추가 등 새로운 것을 만드는 작업
+- update: 수정, 변경, 업데이트 등 기존 것을 바꾸는 작업
+- query: 조회, 검색, 확인 등 정보를 가져오는 작업
 
-  if (['삭제', 'delete', 'remove', 'drop'].some((word) => userMessage.includes(word))) {
-    taskType = 'destructive';
-  } else if (['생성', 'create', '만들', 'add', 'new'].some((word) => userMessage.includes(word))) {
-    taskType = 'create';
-  } else if (['수정', 'update', '변경', 'modify', 'edit'].some((word) => userMessage.includes(word))) {
-    taskType = 'update';
-  } else {
-    taskType = 'query';
-  }
+반드시 위 4가지 중 하나만 답하세요.`,
+    },
+    {
+      role: 'user',
+      content: userMessage,
+    },
+  ]);
+
+  const taskType = response.content.toString().toLowerCase().trim();
+  const validTypes = ['destructive', 'create', 'update', 'query'];
+  const finalTaskType = validTypes.includes(taskType) ? taskType : 'query';
 
   return {
-    taskType,
+    taskType: finalTaskType,
     currentStep: 'analyzed',
   };
 }
 
 /**
  * 분석 결과를 바탕으로 실행 계획을 생성합니다.
+ * OpenAI LLM을 사용하여 상세한 실행 계획을 생성합니다.
  */
-function generatePlan(state: WorkflowStateType): Partial<WorkflowStateType> {
+async function generatePlan(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
   const { taskType, userMessage } = state;
 
-  const plans: Record<string, string> = {
-    destructive: `⚠️ 위험한 작업: '${userMessage}'\n\n실행 단계:\n1. 대상 확인\n2. 백업 생성\n3. 삭제 실행\n4. 결과 검증`,
-    create: `📝 생성 작업: '${userMessage}'\n\n실행 단계:\n1. 요구사항 검증\n2. 리소스 생성\n3. 초기 설정\n4. 결과 확인`,
-    update: `🔄 수정 작업: '${userMessage}'\n\n실행 단계:\n1. 현재 상태 확인\n2. 변경사항 적용\n3. 유효성 검증\n4. 결과 확인`,
-    query: `🔍 조회 작업: '${userMessage}'\n\n실행 단계:\n1. 쿼리 구성\n2. 데이터 조회\n3. 결과 포맷팅`,
+  const taskTypeEmoji: Record<string, string> = {
+    destructive: '⚠️ 위험한 작업',
+    create: '📝 생성 작업',
+    update: '🔄 수정 작업',
+    query: '🔍 조회 작업',
   };
 
+  const response = await llm.invoke([
+    {
+      role: 'system',
+      content: `당신은 작업 계획을 세우는 AI입니다.
+사용자의 요청에 대한 실행 계획을 상세하게 작성하세요.
+계획은 단계별로 나누어 작성하고, 각 단계는 번호로 시작하세요.
+한국어로 작성하세요.`,
+    },
+    {
+      role: 'user',
+      content: `작업 유형: ${taskType}\n사용자 요청: ${userMessage}\n\n이 작업을 수행하기 위한 실행 계획을 작성해주세요.`,
+    },
+  ]);
+
+  const plan = `${taskTypeEmoji[taskType] || '📋 작업'}: '${userMessage}'\n\n${response.content.toString()}`;
+
   return {
-    actionPlan: plans[taskType] || '알 수 없는 작업 유형',
+    actionPlan: plan,
     currentStep: 'planned',
   };
 }
@@ -85,21 +428,122 @@ function requestApproval(state: WorkflowStateType): Partial<WorkflowStateType> {
   };
 }
 
-/**
- * 승인된 작업을 실행합니다.
- */
-function executeAction(state: WorkflowStateType): Partial<WorkflowStateType> {
-  const { taskType } = state;
+// ===== Agent Loop 노드들 =====
 
-  const results: Record<string, string> = {
-    destructive: '✅ 삭제 작업이 성공적으로 완료되었습니다.',
-    create: '✅ 생성 작업이 성공적으로 완료되었습니다.',
-    update: '✅ 수정 작업이 성공적으로 완료되었습니다.',
-    query: '✅ 조회 결과가 준비되었습니다.',
-  };
+/**
+ * Agent 노드: LLM을 호출하여 Tool 사용 여부를 결정합니다.
+ * 첫 호출 시 시스템 메시지와 사용자 메시지를 추가합니다.
+ */
+async function callAgent(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const { userMessage, actionPlan, messages } = state;
+
+  // 첫 호출인 경우 시스템 메시지와 사용자 메시지 추가
+  let currentMessages = messages;
+  if (messages.length === 0) {
+    currentMessages = [
+      new SystemMessage(`당신은 사용자의 요청을 수행하는 AI 어시스턴트입니다.
+주어진 Tool들을 사용하여 작업을 완료하세요.
+사용 가능한 Tool: calculator, get_current_time, search, save_data, delete_data, parse_date
+
+날짜 관련 요청이 있으면 반드시 parse_date Tool을 사용하세요.
+Tool 결과를 받으면 그 결과를 바탕으로 다음 작업을 수행하거나 최종 응답을 하세요.
+
+작업 계획:
+${actionPlan}`),
+      new HumanMessage(userMessage),
+    ];
+  }
+
+  // LLM 호출
+  const response = await llmWithTools.invoke(currentMessages);
 
   return {
-    result: results[taskType] || '작업이 완료되었습니다.',
+    messages: messages.length === 0 ? [...currentMessages, response] : [response],
+    currentStep: 'agent_called',
+  };
+}
+
+/**
+ * Tools 노드: LLM이 요청한 Tool들을 실행하고 결과를 반환합니다.
+ */
+async function executeTools(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const { messages } = state;
+  const lastMessage = messages[messages.length - 1] as AIMessage;
+
+  if (!lastMessage.tool_calls || lastMessage.tool_calls.length === 0) {
+    return { messages: [] };
+  }
+
+  const toolMessages: ToolMessage[] = [];
+
+  for (const toolCall of lastMessage.tool_calls) {
+    const toolName = toolCall.name;
+    const toolArgs = toolCall.args as Record<string, string>;
+
+    // Tool 이름에 따라 실행
+    let result: string;
+    switch (toolName) {
+      case 'calculator':
+        result = await calculatorTool.invoke({ expression: toolArgs.expression });
+        break;
+      case 'get_current_time':
+        result = await getCurrentTimeTool.invoke({});
+        break;
+      case 'search':
+        result = await searchTool.invoke({ query: toolArgs.query });
+        break;
+      case 'save_data':
+        result = await saveDataTool.invoke({ key: toolArgs.key, value: toolArgs.value });
+        break;
+      case 'delete_data':
+        result = await deleteDataTool.invoke({ key: toolArgs.key });
+        break;
+      case 'parse_date':
+        result = await parseDateTool.invoke({ dateExpression: toolArgs.dateExpression });
+        break;
+      default:
+        result = `알 수 없는 Tool: ${toolName}`;
+    }
+
+    // ToolMessage 생성 (tool_call_id 필수!)
+    toolMessages.push(
+      new ToolMessage({
+        content: result,
+        tool_call_id: toolCall.id!,
+      })
+    );
+  }
+
+  return {
+    messages: toolMessages,
+    currentStep: 'tools_executed',
+  };
+}
+
+/**
+ * Agent 라우팅: Tool 호출이 있으면 → tools, 없으면 → done
+ */
+function shouldContinue(state: WorkflowStateType): 'tools' | 'done' {
+  const { messages } = state;
+  const lastMessage = messages[messages.length - 1] as AIMessage;
+
+  // Tool 호출이 있으면 tools 노드로
+  if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
+    return 'tools';
+  }
+  // 없으면 완료
+  return 'done';
+}
+
+/**
+ * Agent 완료 노드: 최종 결과를 추출합니다.
+ */
+function finishAgent(state: WorkflowStateType): Partial<WorkflowStateType> {
+  const { messages } = state;
+  const lastMessage = messages[messages.length - 1] as AIMessage;
+
+  return {
+    result: `✅ ${lastMessage.content}`,
     currentStep: 'executed',
   };
 }
@@ -117,28 +561,73 @@ function cancelAction(_state: WorkflowStateType): Partial<WorkflowStateType> {
 /**
  * 승인 여부에 따라 다음 노드를 결정합니다.
  */
-function routeAfterApproval(state: WorkflowStateType): 'executeAction' | 'cancelAction' {
-  return state.approved ? 'executeAction' : 'cancelAction';
+function routeAfterApproval(state: WorkflowStateType): 'agent' | 'cancelAction' {
+  return state.approved ? 'agent' : 'cancelAction';
 }
 
 /**
  * HITL 워크플로우 그래프를 생성합니다.
+ *
+ * 그래프 구조:
+ *
+ *   START
+ *     │
+ *     ▼
+ *   analyzeRequest
+ *     │
+ *     ▼
+ *   generatePlan
+ *     │
+ *     ▼
+ *   requestApproval (HITL interrupt)
+ *     │
+ *     ├─ approved ──▶ agent ◀──────┐
+ *     │                │           │
+ *     │                ▼           │
+ *     │          shouldContinue    │
+ *     │           │        │       │
+ *     │     tools ◀        ▼       │
+ *     │       │          done      │
+ *     │       │            │       │
+ *     │       └────────────┘       │
+ *     │                    │       │
+ *     │                    ▼       │
+ *     │               finishAgent  │
+ *     │                    │       │
+ *     └─ rejected ──▶ cancelAction │
+ *                          │       │
+ *                          ▼       │
+ *                         END ◀────┘
  */
 function createHitlGraph() {
   const builder = new StateGraph(WorkflowState)
+    // 기존 노드들
     .addNode('analyzeRequest', analyzeRequest)
     .addNode('generatePlan', generatePlan)
     .addNode('requestApproval', requestApproval)
-    .addNode('executeAction', executeAction)
     .addNode('cancelAction', cancelAction)
+    // Agent Loop 노드들
+    .addNode('agent', callAgent)
+    .addNode('tools', executeTools)
+    .addNode('finishAgent', finishAgent)
+    // 기존 엣지
     .addEdge(START, 'analyzeRequest')
     .addEdge('analyzeRequest', 'generatePlan')
     .addEdge('generatePlan', 'requestApproval')
+    // 승인 후 분기
     .addConditionalEdges('requestApproval', routeAfterApproval, {
-      executeAction: 'executeAction',
+      agent: 'agent',        // approved → agent 노드로
       cancelAction: 'cancelAction',
     })
-    .addEdge('executeAction', END)
+    // ⭐ Agent Loop: agent → shouldContinue → tools or done
+    .addConditionalEdges('agent', shouldContinue, {
+      tools: 'tools',        // Tool 호출 있으면 → tools
+      done: 'finishAgent',   // 없으면 → 완료
+    })
+    // ⭐ Tool 실행 후 다시 agent로 (루프!)
+    .addEdge('tools', 'agent')
+    // 종료
+    .addEdge('finishAgent', END)
     .addEdge('cancelAction', END);
 
   return builder;
