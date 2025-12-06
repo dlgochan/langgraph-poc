@@ -8,12 +8,102 @@
 import { StateGraph, START, END, Annotation, interrupt, Command } from '@langchain/langgraph';
 import { MemorySaver } from '@langchain/langgraph';
 import { ChatOpenAI } from '@langchain/openai';
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
+import type { AIMessage } from '@langchain/core/messages';
 
-// OpenAI LLM 인스턴스 (OPENAI_API_KEY 환경변수 사용)
+// ===== Tool 정의 =====
+
+// 계산기 Tool
+const calculatorTool = tool(
+  async ({ expression }) => {
+    try {
+      // 간단한 수식 계산 (실제 운영에서는 더 안전한 방법 사용)
+      const result = Function(`"use strict"; return (${expression})`)();
+      return `계산 결과: ${expression} = ${result}`;
+    } catch {
+      return `계산 오류: "${expression}"는 유효한 수식이 아닙니다.`;
+    }
+  },
+  {
+    name: 'calculator',
+    description: '수학 계산을 수행합니다. 덧셈, 뺄셈, 곱셈, 나눗셈 등의 수식을 계산할 수 있습니다.',
+    schema: z.object({
+      expression: z.string().describe('계산할 수식 (예: "2 + 3 * 4")'),
+    }),
+  }
+);
+
+// 현재 시간 조회 Tool
+const getCurrentTimeTool = tool(
+  async () => {
+    const now = new Date();
+    return `현재 시간: ${now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`;
+  },
+  {
+    name: 'get_current_time',
+    description: '현재 날짜와 시간을 조회합니다.',
+    schema: z.object({}),
+  }
+);
+
+// 검색 Tool (시뮬레이션)
+const searchTool = tool(
+  async ({ query }) => {
+    // 실제로는 외부 API 호출
+    return `"${query}"에 대한 검색 결과:\n1. ${query} 관련 문서 1\n2. ${query} 관련 문서 2\n3. ${query} 관련 문서 3`;
+  },
+  {
+    name: 'search',
+    description: '정보를 검색합니다. 질문이나 키워드로 관련 정보를 찾을 수 있습니다.',
+    schema: z.object({
+      query: z.string().describe('검색할 질문이나 키워드'),
+    }),
+  }
+);
+
+// 데이터 저장 Tool (시뮬레이션)
+const saveDataTool = tool(
+  async ({ key, value }) => {
+    // 실제로는 DB에 저장
+    return `데이터 저장 완료: "${key}" = "${value}"`;
+  },
+  {
+    name: 'save_data',
+    description: '데이터를 저장합니다.',
+    schema: z.object({
+      key: z.string().describe('저장할 데이터의 키'),
+      value: z.string().describe('저장할 데이터의 값'),
+    }),
+  }
+);
+
+// 데이터 삭제 Tool (시뮬레이션)
+const deleteDataTool = tool(
+  async ({ key }) => {
+    // 실제로는 DB에서 삭제
+    return `데이터 삭제 완료: "${key}"`;
+  },
+  {
+    name: 'delete_data',
+    description: '데이터를 삭제합니다.',
+    schema: z.object({
+      key: z.string().describe('삭제할 데이터의 키'),
+    }),
+  }
+);
+
+// 모든 Tool 목록
+const tools = [calculatorTool, getCurrentTimeTool, searchTool, saveDataTool, deleteDataTool];
+
+// OpenAI LLM 인스턴스 (Tool 바인딩 포함)
 const llm = new ChatOpenAI({
   modelName: 'gpt-4o-mini',
   temperature: 0.7,
 });
+
+// Tool이 바인딩된 LLM
+const llmWithTools = llm.bindTools(tools);
 
 // 상태 스키마 정의
 export const WorkflowState = Annotation.Root({
@@ -23,6 +113,11 @@ export const WorkflowState = Annotation.Root({
   approved: Annotation<boolean | null>(),
   result: Annotation<string>(),
   currentStep: Annotation<string>(),
+  // Tool 호출을 위한 메시지 히스토리
+  messages: Annotation<AIMessage[]>({
+    reducer: (prev, next) => [...prev, ...next],
+    default: () => [],
+  }),
 });
 
 export type WorkflowStateType = typeof WorkflowState.State;
@@ -122,20 +217,72 @@ function requestApproval(state: WorkflowStateType): Partial<WorkflowStateType> {
 
 /**
  * 승인된 작업을 실행합니다.
+ * Tool을 사용하여 실제 작업을 수행합니다.
  */
-function executeAction(state: WorkflowStateType): Partial<WorkflowStateType> {
-  const { taskType } = state;
+async function executeAction(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const { userMessage, actionPlan } = state;
 
-  const results: Record<string, string> = {
-    destructive: '✅ 삭제 작업이 성공적으로 완료되었습니다.',
-    create: '✅ 생성 작업이 성공적으로 완료되었습니다.',
-    update: '✅ 수정 작업이 성공적으로 완료되었습니다.',
-    query: '✅ 조회 결과가 준비되었습니다.',
-  };
+  // LLM에게 Tool을 사용하여 작업을 수행하도록 요청
+  const response = await llmWithTools.invoke([
+    {
+      role: 'system',
+      content: `당신은 사용자의 요청을 수행하는 AI 어시스턴트입니다.
+주어진 Tool들을 사용하여 작업을 완료하세요.
+사용 가능한 Tool: calculator, get_current_time, search, save_data, delete_data
 
+작업 계획:
+${actionPlan}`,
+    },
+    {
+      role: 'user',
+      content: userMessage,
+    },
+  ]);
+
+  // Tool 호출이 있는 경우 실행
+  if (response.tool_calls && response.tool_calls.length > 0) {
+    const toolResults: string[] = [];
+
+    for (const toolCall of response.tool_calls) {
+      const toolName = toolCall.name;
+      const toolArgs = toolCall.args as Record<string, string>;
+
+      // Tool 이름에 따라 실행
+      let result: string;
+      switch (toolName) {
+        case 'calculator':
+          result = await calculatorTool.invoke({ expression: toolArgs.expression });
+          break;
+        case 'get_current_time':
+          result = await getCurrentTimeTool.invoke({});
+          break;
+        case 'search':
+          result = await searchTool.invoke({ query: toolArgs.query });
+          break;
+        case 'save_data':
+          result = await saveDataTool.invoke({ key: toolArgs.key, value: toolArgs.value });
+          break;
+        case 'delete_data':
+          result = await deleteDataTool.invoke({ key: toolArgs.key });
+          break;
+        default:
+          result = `알 수 없는 Tool: ${toolName}`;
+      }
+      toolResults.push(`[${toolName}] ${result}`);
+    }
+
+    return {
+      result: `✅ 작업 완료!\n\n${toolResults.join('\n')}`,
+      currentStep: 'executed',
+      messages: [response],
+    };
+  }
+
+  // Tool 호출이 없는 경우 LLM 응답 반환
   return {
-    result: results[taskType] || '작업이 완료되었습니다.',
+    result: `✅ ${response.content}`,
     currentStep: 'executed',
+    messages: [response],
   };
 }
 
