@@ -1,4 +1,4 @@
-import { WorkflowChat } from '@/components/WorkflowChat';
+import { WorkflowChat } from "@/components/workflow-chat";
 
 export default function Home() {
   return (

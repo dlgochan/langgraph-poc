@@ -5,13 +5,7 @@ import { Send, RotateCcw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApprovalCard } from "@/components/approval-card";
-import type {
-  WorkflowStatus,
-  InterruptData,
-  WorkflowState,
-  StartWorkflowResponse,
-  ResumeWorkflowResponse,
-} from "@/types/workflow";
+import type { WorkflowStatus, InterruptData, WorkflowState } from "@/types/workflow";
 
 interface Message {
   id: string;
@@ -20,33 +14,58 @@ interface Message {
   timestamp: Date;
 }
 
-async function startWorkflow(message: string): Promise<StartWorkflowResponse> {
-  const response = await fetch("/api/workflow/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || "Request failed");
-  }
-  return response.json();
+interface SSEData {
+  threadId?: string;
+  status?: string;
+  interruptData?: InterruptData;
+  state?: WorkflowState;
+  result?: string;
+  error?: string;
+  decision?: string;
 }
 
-async function resumeWorkflow(
-  threadId: string,
-  decision: "approve" | "reject"
-): Promise<ResumeWorkflowResponse> {
-  const response = await fetch(`/api/workflow/${threadId}/resume`, {
+/**
+ * SSE 기반 워크플로우 API 호출
+ */
+async function callWorkflowSSE(
+  body: { message?: string; threadId?: string; decision?: string },
+  onEvent: (event: string, data: SSEData) => void
+): Promise<void> {
+  const response = await fetch("/api/workflow", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify(body),
   });
+
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || "Request failed");
+    throw new Error("Request failed");
   }
-  return response.json();
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No reader");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    let currentEvent = "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7);
+      } else if (line.startsWith("data: ") && currentEvent) {
+        const data = JSON.parse(line.slice(6));
+        onEvent(currentEvent, data);
+        currentEvent = "";
+      }
+    }
+  }
 }
 
 export function WorkflowChat() {
@@ -70,6 +89,43 @@ export function WorkflowChat() {
     ]);
   }, []);
 
+  const handleSSEEvent = useCallback(
+    (event: string, data: SSEData) => {
+      switch (event) {
+        case "start":
+          setThreadId(data.threadId || null);
+          addMessage("system", "워크플로우를 시작합니다...");
+          break;
+        case "interrupt":
+          setStatus("awaiting_approval");
+          setInterruptData(data.interruptData || null);
+          setWorkflowState(data.state || null);
+          addMessage("system", "작업 계획이 생성되었습니다. 승인이 필요합니다.");
+          break;
+        case "resume":
+          addMessage(
+            "system",
+            data.decision === "approve"
+              ? "승인됨. 작업을 실행합니다..."
+              : "거부됨. 작업을 취소합니다..."
+          );
+          break;
+        case "complete":
+          setStatus("completed");
+          setInterruptData(null);
+          setWorkflowState(data.state || null);
+          addMessage("result", data.result || data.state?.result || "작업이 완료되었습니다.");
+          break;
+        case "error":
+          setStatus("error");
+          setError(data.error || "Unknown error");
+          addMessage("system", `오류: ${data.error}`);
+          break;
+      }
+    },
+    [addMessage]
+  );
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || status === "running") return;
@@ -80,21 +136,9 @@ export function WorkflowChat() {
 
     addMessage("user", userMessage);
     setStatus("running");
-    addMessage("system", "워크플로우를 시작합니다...");
 
     try {
-      const response = await startWorkflow(userMessage);
-      setThreadId(response.threadId);
-      setWorkflowState(response.state || null);
-
-      if (response.requiresApproval && response.interruptData) {
-        setStatus("awaiting_approval");
-        setInterruptData(response.interruptData);
-        addMessage("system", "작업 계획이 생성되었습니다. 승인이 필요합니다.");
-      } else {
-        setStatus("completed");
-        addMessage("result", response.state?.result || "작업이 완료되었습니다.");
-      }
+      await callWorkflowSSE({ message: userMessage }, handleSSEEvent);
     } catch (err) {
       setStatus("error");
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
@@ -106,14 +150,9 @@ export function WorkflowChat() {
   const handleApprove = async () => {
     if (!threadId) return;
     setStatus("running");
-    addMessage("system", "승인됨. 작업을 실행합니다...");
 
     try {
-      const response = await resumeWorkflow(threadId, "approve");
-      setStatus("completed");
-      setInterruptData(null);
-      setWorkflowState(response.state || null);
-      addMessage("result", response.result || "작업이 완료되었습니다.");
+      await callWorkflowSSE({ threadId, decision: "approve" }, handleSSEEvent);
     } catch (err) {
       setStatus("error");
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
@@ -125,14 +164,9 @@ export function WorkflowChat() {
   const handleReject = async () => {
     if (!threadId) return;
     setStatus("running");
-    addMessage("system", "거부됨. 작업을 취소합니다...");
 
     try {
-      const response = await resumeWorkflow(threadId, "reject");
-      setStatus("completed");
-      setInterruptData(null);
-      setWorkflowState(response.state || null);
-      addMessage("result", response.result || "작업이 취소되었습니다.");
+      await callWorkflowSSE({ threadId, decision: "reject" }, handleSSEEvent);
     } catch (err) {
       setStatus("error");
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
@@ -163,7 +197,7 @@ export function WorkflowChat() {
     <Card className="flex h-full flex-col">
       <CardHeader className="flex-row items-center justify-between space-y-0 border-b">
         <div>
-          <CardTitle>LangGraph HITL Demo</CardTitle>
+          <CardTitle>LangGraph HITL Demo (SSE)</CardTitle>
           <p className="text-sm text-muted-foreground">
             Human-in-the-Loop 워크플로우
           </p>
