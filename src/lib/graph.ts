@@ -7,6 +7,13 @@
 
 import { StateGraph, START, END, Annotation, interrupt, Command } from '@langchain/langgraph';
 import { MemorySaver } from '@langchain/langgraph';
+import { ChatOpenAI } from '@langchain/openai';
+
+// OpenAI LLM 인스턴스 (OPENAI_API_KEY 환경변수 사용)
+const llm = new ChatOpenAI({
+  modelName: 'gpt-4o-mini',
+  temperature: 0.7,
+});
 
 // 상태 스키마 정의
 export const WorkflowState = Annotation.Root({
@@ -22,43 +29,71 @@ export type WorkflowStateType = typeof WorkflowState.State;
 
 /**
  * 사용자 요청을 분석하여 작업 유형을 결정합니다.
+ * OpenAI LLM을 사용하여 의도를 파악합니다.
  */
-function analyzeRequest(state: WorkflowStateType): Partial<WorkflowStateType> {
-  const userMessage = state.userMessage.toLowerCase();
+async function analyzeRequest(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const userMessage = state.userMessage;
 
-  let taskType: string;
+  const response = await llm.invoke([
+    {
+      role: 'system',
+      content: `당신은 사용자 요청을 분석하는 AI입니다.
+사용자의 요청을 분석하여 다음 중 하나의 작업 유형을 반환하세요:
+- destructive: 삭제, 제거, 드롭 등 위험한 작업
+- create: 생성, 만들기, 추가 등 새로운 것을 만드는 작업
+- update: 수정, 변경, 업데이트 등 기존 것을 바꾸는 작업
+- query: 조회, 검색, 확인 등 정보를 가져오는 작업
 
-  if (['삭제', 'delete', 'remove', 'drop'].some((word) => userMessage.includes(word))) {
-    taskType = 'destructive';
-  } else if (['생성', 'create', '만들', 'add', 'new'].some((word) => userMessage.includes(word))) {
-    taskType = 'create';
-  } else if (['수정', 'update', '변경', 'modify', 'edit'].some((word) => userMessage.includes(word))) {
-    taskType = 'update';
-  } else {
-    taskType = 'query';
-  }
+반드시 위 4가지 중 하나만 답하세요.`,
+    },
+    {
+      role: 'user',
+      content: userMessage,
+    },
+  ]);
+
+  const taskType = response.content.toString().toLowerCase().trim();
+  const validTypes = ['destructive', 'create', 'update', 'query'];
+  const finalTaskType = validTypes.includes(taskType) ? taskType : 'query';
 
   return {
-    taskType,
+    taskType: finalTaskType,
     currentStep: 'analyzed',
   };
 }
 
 /**
  * 분석 결과를 바탕으로 실행 계획을 생성합니다.
+ * OpenAI LLM을 사용하여 상세한 실행 계획을 생성합니다.
  */
-function generatePlan(state: WorkflowStateType): Partial<WorkflowStateType> {
+async function generatePlan(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
   const { taskType, userMessage } = state;
 
-  const plans: Record<string, string> = {
-    destructive: `⚠️ 위험한 작업: '${userMessage}'\n\n실행 단계:\n1. 대상 확인\n2. 백업 생성\n3. 삭제 실행\n4. 결과 검증`,
-    create: `📝 생성 작업: '${userMessage}'\n\n실행 단계:\n1. 요구사항 검증\n2. 리소스 생성\n3. 초기 설정\n4. 결과 확인`,
-    update: `🔄 수정 작업: '${userMessage}'\n\n실행 단계:\n1. 현재 상태 확인\n2. 변경사항 적용\n3. 유효성 검증\n4. 결과 확인`,
-    query: `🔍 조회 작업: '${userMessage}'\n\n실행 단계:\n1. 쿼리 구성\n2. 데이터 조회\n3. 결과 포맷팅`,
+  const taskTypeEmoji: Record<string, string> = {
+    destructive: '⚠️ 위험한 작업',
+    create: '📝 생성 작업',
+    update: '🔄 수정 작업',
+    query: '🔍 조회 작업',
   };
 
+  const response = await llm.invoke([
+    {
+      role: 'system',
+      content: `당신은 작업 계획을 세우는 AI입니다.
+사용자의 요청에 대한 실행 계획을 상세하게 작성하세요.
+계획은 단계별로 나누어 작성하고, 각 단계는 번호로 시작하세요.
+한국어로 작성하세요.`,
+    },
+    {
+      role: 'user',
+      content: `작업 유형: ${taskType}\n사용자 요청: ${userMessage}\n\n이 작업을 수행하기 위한 실행 계획을 작성해주세요.`,
+    },
+  ]);
+
+  const plan = `${taskTypeEmoji[taskType] || '📋 작업'}: '${userMessage}'\n\n${response.content.toString()}`;
+
   return {
-    actionPlan: plans[taskType] || '알 수 없는 작업 유형',
+    actionPlan: plan,
     currentStep: 'planned',
   };
 }
