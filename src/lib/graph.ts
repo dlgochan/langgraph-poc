@@ -10,7 +10,7 @@ import { MemorySaver } from '@langchain/langgraph';
 import { ChatOpenAI } from '@langchain/openai';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import type { AIMessage } from '@langchain/core/messages';
+import { BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage } from '@langchain/core/messages';
 
 // ===== Tool 정의 =====
 
@@ -326,8 +326,8 @@ export const WorkflowState = Annotation.Root({
   approved: Annotation<boolean | null>(),
   result: Annotation<string>(),
   currentStep: Annotation<string>(),
-  // Tool 호출을 위한 메시지 히스토리
-  messages: Annotation<AIMessage[]>({
+  // Agent Loop을 위한 메시지 히스토리 (BaseMessage[] 타입)
+  messages: Annotation<BaseMessage[]>({
     reducer: (prev, next) => [...prev, ...next],
     default: () => [],
   }),
@@ -428,79 +428,123 @@ function requestApproval(state: WorkflowStateType): Partial<WorkflowStateType> {
   };
 }
 
-/**
- * 승인된 작업을 실행합니다.
- * Tool을 사용하여 실제 작업을 수행합니다.
- */
-async function executeAction(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
-  const { userMessage, actionPlan } = state;
+// ===== Agent Loop 노드들 =====
 
-  // LLM에게 Tool을 사용하여 작업을 수행하도록 요청
-  const response = await llmWithTools.invoke([
-    {
-      role: 'system',
-      content: `당신은 사용자의 요청을 수행하는 AI 어시스턴트입니다.
+/**
+ * Agent 노드: LLM을 호출하여 Tool 사용 여부를 결정합니다.
+ * 첫 호출 시 시스템 메시지와 사용자 메시지를 추가합니다.
+ */
+async function callAgent(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const { userMessage, actionPlan, messages } = state;
+
+  // 첫 호출인 경우 시스템 메시지와 사용자 메시지 추가
+  let currentMessages = messages;
+  if (messages.length === 0) {
+    currentMessages = [
+      new SystemMessage(`당신은 사용자의 요청을 수행하는 AI 어시스턴트입니다.
 주어진 Tool들을 사용하여 작업을 완료하세요.
 사용 가능한 Tool: calculator, get_current_time, search, save_data, delete_data, parse_date
 
 날짜 관련 요청이 있으면 반드시 parse_date Tool을 사용하세요.
+Tool 결과를 받으면 그 결과를 바탕으로 다음 작업을 수행하거나 최종 응답을 하세요.
 
 작업 계획:
-${actionPlan}`,
-    },
-    {
-      role: 'user',
-      content: userMessage,
-    },
-  ]);
-
-  // Tool 호출이 있는 경우 실행
-  if (response.tool_calls && response.tool_calls.length > 0) {
-    const toolResults: string[] = [];
-
-    for (const toolCall of response.tool_calls) {
-      const toolName = toolCall.name;
-      const toolArgs = toolCall.args as Record<string, string>;
-
-      // Tool 이름에 따라 실행
-      let result: string;
-      switch (toolName) {
-        case 'calculator':
-          result = await calculatorTool.invoke({ expression: toolArgs.expression });
-          break;
-        case 'get_current_time':
-          result = await getCurrentTimeTool.invoke({});
-          break;
-        case 'search':
-          result = await searchTool.invoke({ query: toolArgs.query });
-          break;
-        case 'save_data':
-          result = await saveDataTool.invoke({ key: toolArgs.key, value: toolArgs.value });
-          break;
-        case 'delete_data':
-          result = await deleteDataTool.invoke({ key: toolArgs.key });
-          break;
-        case 'parse_date':
-          result = await parseDateTool.invoke({ dateExpression: toolArgs.dateExpression });
-          break;
-        default:
-          result = `알 수 없는 Tool: ${toolName}`;
-      }
-      toolResults.push(`[${toolName}] ${result}`);
-    }
-
-    return {
-      result: `✅ 작업 완료!\n\n${toolResults.join('\n')}`,
-      currentStep: 'executed',
-      messages: [response],
-    };
+${actionPlan}`),
+      new HumanMessage(userMessage),
+    ];
   }
 
-  // Tool 호출이 없는 경우 LLM 응답 반환
+  // LLM 호출
+  const response = await llmWithTools.invoke(currentMessages);
+
   return {
-    result: `✅ ${response.content}`,
+    messages: messages.length === 0 ? [...currentMessages, response] : [response],
+    currentStep: 'agent_called',
+  };
+}
+
+/**
+ * Tools 노드: LLM이 요청한 Tool들을 실행하고 결과를 반환합니다.
+ */
+async function executeTools(state: WorkflowStateType): Promise<Partial<WorkflowStateType>> {
+  const { messages } = state;
+  const lastMessage = messages[messages.length - 1] as AIMessage;
+
+  if (!lastMessage.tool_calls || lastMessage.tool_calls.length === 0) {
+    return { messages: [] };
+  }
+
+  const toolMessages: ToolMessage[] = [];
+
+  for (const toolCall of lastMessage.tool_calls) {
+    const toolName = toolCall.name;
+    const toolArgs = toolCall.args as Record<string, string>;
+
+    // Tool 이름에 따라 실행
+    let result: string;
+    switch (toolName) {
+      case 'calculator':
+        result = await calculatorTool.invoke({ expression: toolArgs.expression });
+        break;
+      case 'get_current_time':
+        result = await getCurrentTimeTool.invoke({});
+        break;
+      case 'search':
+        result = await searchTool.invoke({ query: toolArgs.query });
+        break;
+      case 'save_data':
+        result = await saveDataTool.invoke({ key: toolArgs.key, value: toolArgs.value });
+        break;
+      case 'delete_data':
+        result = await deleteDataTool.invoke({ key: toolArgs.key });
+        break;
+      case 'parse_date':
+        result = await parseDateTool.invoke({ dateExpression: toolArgs.dateExpression });
+        break;
+      default:
+        result = `알 수 없는 Tool: ${toolName}`;
+    }
+
+    // ToolMessage 생성 (tool_call_id 필수!)
+    toolMessages.push(
+      new ToolMessage({
+        content: result,
+        tool_call_id: toolCall.id!,
+      })
+    );
+  }
+
+  return {
+    messages: toolMessages,
+    currentStep: 'tools_executed',
+  };
+}
+
+/**
+ * Agent 라우팅: Tool 호출이 있으면 → tools, 없으면 → done
+ */
+function shouldContinue(state: WorkflowStateType): 'tools' | 'done' {
+  const { messages } = state;
+  const lastMessage = messages[messages.length - 1] as AIMessage;
+
+  // Tool 호출이 있으면 tools 노드로
+  if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
+    return 'tools';
+  }
+  // 없으면 완료
+  return 'done';
+}
+
+/**
+ * Agent 완료 노드: 최종 결과를 추출합니다.
+ */
+function finishAgent(state: WorkflowStateType): Partial<WorkflowStateType> {
+  const { messages } = state;
+  const lastMessage = messages[messages.length - 1] as AIMessage;
+
+  return {
+    result: `✅ ${lastMessage.content}`,
     currentStep: 'executed',
-    messages: [response],
   };
 }
 
@@ -517,28 +561,73 @@ function cancelAction(_state: WorkflowStateType): Partial<WorkflowStateType> {
 /**
  * 승인 여부에 따라 다음 노드를 결정합니다.
  */
-function routeAfterApproval(state: WorkflowStateType): 'executeAction' | 'cancelAction' {
-  return state.approved ? 'executeAction' : 'cancelAction';
+function routeAfterApproval(state: WorkflowStateType): 'agent' | 'cancelAction' {
+  return state.approved ? 'agent' : 'cancelAction';
 }
 
 /**
  * HITL 워크플로우 그래프를 생성합니다.
+ *
+ * 그래프 구조:
+ *
+ *   START
+ *     │
+ *     ▼
+ *   analyzeRequest
+ *     │
+ *     ▼
+ *   generatePlan
+ *     │
+ *     ▼
+ *   requestApproval (HITL interrupt)
+ *     │
+ *     ├─ approved ──▶ agent ◀──────┐
+ *     │                │           │
+ *     │                ▼           │
+ *     │          shouldContinue    │
+ *     │           │        │       │
+ *     │     tools ◀        ▼       │
+ *     │       │          done      │
+ *     │       │            │       │
+ *     │       └────────────┘       │
+ *     │                    │       │
+ *     │                    ▼       │
+ *     │               finishAgent  │
+ *     │                    │       │
+ *     └─ rejected ──▶ cancelAction │
+ *                          │       │
+ *                          ▼       │
+ *                         END ◀────┘
  */
 function createHitlGraph() {
   const builder = new StateGraph(WorkflowState)
+    // 기존 노드들
     .addNode('analyzeRequest', analyzeRequest)
     .addNode('generatePlan', generatePlan)
     .addNode('requestApproval', requestApproval)
-    .addNode('executeAction', executeAction)
     .addNode('cancelAction', cancelAction)
+    // Agent Loop 노드들
+    .addNode('agent', callAgent)
+    .addNode('tools', executeTools)
+    .addNode('finishAgent', finishAgent)
+    // 기존 엣지
     .addEdge(START, 'analyzeRequest')
     .addEdge('analyzeRequest', 'generatePlan')
     .addEdge('generatePlan', 'requestApproval')
+    // 승인 후 분기
     .addConditionalEdges('requestApproval', routeAfterApproval, {
-      executeAction: 'executeAction',
+      agent: 'agent',        // approved → agent 노드로
       cancelAction: 'cancelAction',
     })
-    .addEdge('executeAction', END)
+    // ⭐ Agent Loop: agent → shouldContinue → tools or done
+    .addConditionalEdges('agent', shouldContinue, {
+      tools: 'tools',        // Tool 호출 있으면 → tools
+      done: 'finishAgent',   // 없으면 → 완료
+    })
+    // ⭐ Tool 실행 후 다시 agent로 (루프!)
+    .addEdge('tools', 'agent')
+    // 종료
+    .addEdge('finishAgent', END)
     .addEdge('cancelAction', END);
 
   return builder;
