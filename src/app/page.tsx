@@ -6,7 +6,7 @@ export default function Home() {
       <header className="border-b border-gray-200 bg-white px-6 py-4 dark:border-gray-800 dark:bg-gray-900">
         <div className="mx-auto max-w-4xl">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            LangGraph HITL POC
+            🏨 호텔 예약 챗봇
           </h1>
         </div>
       </header>

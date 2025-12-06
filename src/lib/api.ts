@@ -1,5 +1,5 @@
 /**
- * LangGraph HITL API 클라이언트
+ * Chat API 클라이언트
  */
 
 import type { ChatResponse } from '@/types/chat';
@@ -23,23 +23,32 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 /**
- * 통합 Chat API
- * - message만 전달: 새 워크플로우 시작
- * - threadId + decision 전달: 워크플로우 재개
+ * 메시지 전송
  */
-export async function chat(params: {
-  message?: string;
-  threadId?: string;
-  decision?: 'approve' | 'reject';
-}): Promise<ChatResponse> {
+export async function sendMessage(
+  message: string,
+  threadId?: string
+): Promise<ChatResponse> {
   const response = await fetch('/api/chat', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, threadId }),
   });
+  return handleResponse<ChatResponse>(response);
+}
 
+/**
+ * 승인/거부 처리
+ */
+export async function submitApproval(
+  threadId: string,
+  approved: boolean
+): Promise<ChatResponse> {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ threadId, approved }),
+  });
   return handleResponse<ChatResponse>(response);
 }
 

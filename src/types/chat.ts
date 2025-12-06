@@ -2,31 +2,23 @@
  * Chat 타입 정의
  */
 
-export interface ChatState {
-  taskType?: string;
-  actionPlan?: string;
-  currentStep?: string;
-  result?: string;
-}
-
-export interface InterruptData {
-  question: string;
-  actionPlan: string;
-  taskType: string;
-  options: string[];
+export interface ToolCallInfo {
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  description: string;
+  message: string;
 }
 
 export interface ChatResponse {
   threadId: string;
-  status: 'awaiting_approval' | 'completed';
-  interruptData?: InterruptData;
-  result?: string;
-  state: ChatState;
+  status: 'ready' | 'awaiting_approval';
+  response?: string;
+  toolCall?: ToolCallInfo;
 }
 
 export type ChatStatus =
   | 'idle'
-  | 'running'
+  | 'loading'
   | 'awaiting_approval'
-  | 'completed'
+  | 'ready'
   | 'error';
