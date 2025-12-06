@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { chat } from '@/lib/api';
 import { ApprovalDialog } from './ApprovalDialog';
-import type { WorkflowStatus, InterruptData, WorkflowState } from '@/types/workflow';
+import type { ChatStatus, InterruptData, ChatState } from '@/types/chat';
 
 interface Message {
   id: string;
@@ -12,16 +12,13 @@ interface Message {
   timestamp: Date;
 }
 
-/**
- * HITL 워크플로우 채팅 인터페이스
- */
-export function WorkflowChat() {
+export function Chat() {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
-  const [status, setStatus] = useState<WorkflowStatus>('idle');
+  const [status, setStatus] = useState<ChatStatus>('idle');
   const [threadId, setThreadId] = useState<string | null>(null);
   const [interruptData, setInterruptData] = useState<InterruptData | null>(null);
-  const [workflowState, setWorkflowState] = useState<WorkflowState | null>(null);
+  const [chatState, setChatState] = useState<ChatState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const addMessage = useCallback((role: Message['role'], content: string) => {
@@ -46,20 +43,19 @@ export function WorkflowChat() {
 
     addMessage('user', userMessage);
     setStatus('running');
-    addMessage('system', '워크플로우를 시작합니다...');
 
     try {
       const response = await chat({ message: userMessage });
       setThreadId(response.threadId);
-      setWorkflowState(response.state);
+      setChatState(response.state);
 
       if (response.status === 'awaiting_approval' && response.interruptData) {
         setStatus('awaiting_approval');
         setInterruptData(response.interruptData);
-        addMessage('system', '작업 계획이 생성되었습니다. 승인이 필요합니다.');
+        addMessage('system', '승인이 필요합니다.');
       } else {
         setStatus('completed');
-        addMessage('result', response.result || '작업이 완료되었습니다.');
+        addMessage('result', response.result || '완료되었습니다.');
       }
     } catch (err) {
       setStatus('error');
@@ -73,21 +69,20 @@ export function WorkflowChat() {
     if (!threadId) return;
 
     setStatus('running');
-    addMessage('system', decision === 'approve' ? '승인됨. 작업을 실행합니다...' : '거부됨. 작업을 취소합니다...');
+    addMessage('system', decision === 'approve' ? '승인됨' : '거부됨');
 
     try {
       const response = await chat({ threadId, decision });
-      setWorkflowState(response.state);
+      setChatState(response.state);
       setInterruptData(null);
 
       if (response.status === 'awaiting_approval' && response.interruptData) {
-        // 또 다른 interrupt에 걸린 경우
         setStatus('awaiting_approval');
         setInterruptData(response.interruptData);
         addMessage('system', '추가 승인이 필요합니다.');
       } else {
         setStatus('completed');
-        addMessage('result', response.result || '작업이 완료되었습니다.');
+        addMessage('result', response.result || '완료되었습니다.');
       }
     } catch (err) {
       setStatus('error');
@@ -102,7 +97,7 @@ export function WorkflowChat() {
     setStatus('idle');
     setThreadId(null);
     setInterruptData(null);
-    setWorkflowState(null);
+    setChatState(null);
     setError(null);
     setInput('');
   };
@@ -113,9 +108,6 @@ export function WorkflowChat() {
       <div className="flex items-center justify-between border-b border-gray-200 p-4 dark:border-gray-700">
         <div>
           <h2 className="text-lg font-semibold">LangGraph HITL Demo</h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Human-in-the-Loop 워크플로우
-          </p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
@@ -133,7 +125,7 @@ export function WorkflowChat() {
               }`}
             />
             <span className="text-sm text-gray-600 dark:text-gray-300">
-              {status === 'idle' && '대기 중'}
+              {status === 'idle' && '대기'}
               {status === 'running' && '실행 중'}
               {status === 'awaiting_approval' && '승인 대기'}
               {status === 'completed' && '완료'}
@@ -155,10 +147,7 @@ export function WorkflowChat() {
           <div className="flex h-full items-center justify-center text-gray-400">
             <div className="text-center">
               <p className="mb-2 text-4xl">💬</p>
-              <p>메시지를 입력하여 워크플로우를 시작하세요</p>
-              <p className="mt-2 text-sm">
-                예: &quot;데이터베이스 사용자 삭제&quot;, &quot;새 프로젝트 생성&quot;
-              </p>
+              <p>메시지를 입력하세요</p>
             </div>
           </div>
         ) : (
@@ -191,7 +180,6 @@ export function WorkflowChat() {
               </div>
             ))}
 
-            {/* 승인 다이얼로그 */}
             {status === 'awaiting_approval' && interruptData && (
               <ApprovalDialog
                 interruptData={interruptData}
@@ -204,15 +192,15 @@ export function WorkflowChat() {
         )}
       </div>
 
-      {/* 워크플로우 상태 정보 */}
-      {workflowState && (
+      {/* 상태 정보 */}
+      {chatState && (
         <div className="border-t border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900">
           <details className="text-sm">
             <summary className="cursor-pointer text-gray-600 dark:text-gray-400">
-              워크플로우 상태 정보
+              상태 정보
             </summary>
             <pre className="mt-2 overflow-x-auto text-xs text-gray-500">
-              {JSON.stringify(workflowState, null, 2)}
+              {JSON.stringify(chatState, null, 2)}
             </pre>
           </details>
         </div>
@@ -228,7 +216,7 @@ export function WorkflowChat() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="작업을 입력하세요... (예: 파일 삭제, 사용자 생성)"
+            placeholder="메시지를 입력하세요..."
             disabled={status === 'running' || status === 'awaiting_approval'}
             className="flex-1 rounded-lg border border-gray-300 px-4 py-2 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-white dark:disabled:bg-gray-900"
           />

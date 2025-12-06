@@ -1,6 +1,6 @@
 'use client';
 
-import type { InterruptData } from '@/types/workflow';
+import type { InterruptData } from '@/types/chat';
 
 interface ApprovalDialogProps {
   interruptData: InterruptData;

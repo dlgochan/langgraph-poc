@@ -2,7 +2,7 @@
  * LangGraph HITL API 클라이언트
  */
 
-import type { ChatResponse } from '@/types/workflow';
+import type { ChatResponse } from '@/types/chat';
 
 class APIError extends Error {
   constructor(

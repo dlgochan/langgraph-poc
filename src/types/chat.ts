@@ -1,8 +1,8 @@
 /**
- * LangGraph HITL Workflow 타입 정의
+ * Chat 타입 정의
  */
 
-export interface WorkflowState {
+export interface ChatState {
   taskType?: string;
   actionPlan?: string;
   currentStep?: string;
@@ -16,18 +16,15 @@ export interface InterruptData {
   options: string[];
 }
 
-/**
- * 통합 Chat API 응답 타입
- */
 export interface ChatResponse {
   threadId: string;
   status: 'awaiting_approval' | 'completed';
   interruptData?: InterruptData;
   result?: string;
-  state: WorkflowState;
+  state: ChatState;
 }
 
-export type WorkflowStatus =
+export type ChatStatus =
   | 'idle'
   | 'running'
   | 'awaiting_approval'
