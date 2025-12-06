@@ -6,7 +6,7 @@
  * - 위험한 도구: interrupt로 사용자 승인 요청
  */
 
-import { ChatOpenAI } from '@langchain/openai';
+import { ChatAnthropic } from '@langchain/anthropic';
 import {
   StateGraph,
   START,
@@ -17,13 +17,12 @@ import {
   MemorySaver,
 } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
-import { AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { AIMessage, SystemMessage } from '@langchain/core/messages';
 import { allTools, isDangerousTool } from './tools';
 
 // 상태 정의
 const AgentState = Annotation.Root({
   ...MessagesAnnotation.spec,
-  // 승인 대기 중인 도구 호출 정보
   pendingToolCall: Annotation<{
     toolName: string;
     toolArgs: Record<string, unknown>;
@@ -33,11 +32,23 @@ const AgentState = Annotation.Root({
 
 export type AgentStateType = typeof AgentState.State;
 
-// LLM 설정
-const llm = new ChatOpenAI({
-  modelName: 'gpt-4o-mini',
-  temperature: 0,
-}).bindTools(allTools);
+// LLM lazy 초기화 (빌드 타임에는 생성하지 않음)
+let llm: ReturnType<typeof ChatAnthropic.prototype.bindTools> | null = null;
+
+function getLLM() {
+  if (!llm) {
+    const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+    if (!apiKey) {
+      throw new Error('ANTHROPIC_API_KEY 또는 CLAUDE_API_KEY 환경변수가 필요합니다');
+    }
+    llm = new ChatAnthropic({
+      modelName: 'claude-sonnet-4-20250514',
+      temperature: 0,
+      anthropicApiKey: apiKey,
+    }).bindTools(allTools);
+  }
+  return llm;
+}
 
 const SYSTEM_PROMPT = `당신은 친절한 호텔 예약 챗봇입니다.
 
@@ -50,23 +61,17 @@ const SYSTEM_PROMPT = `당신은 친절한 호텔 예약 챗봇입니다.
 항상 친절하게 응대하고, 필요한 정보가 부족하면 먼저 물어보세요.
 오늘 날짜는 2024년 3월 10일입니다.`;
 
-/**
- * LLM을 호출하여 응답 또는 도구 호출을 결정
- */
 async function callModel(state: AgentStateType) {
   const messagesWithSystem = [
     new SystemMessage(SYSTEM_PROMPT),
     ...state.messages,
   ];
 
-  const response = await llm.invoke(messagesWithSystem);
+  const response = await getLLM().invoke(messagesWithSystem);
 
   return { messages: [response] };
 }
 
-/**
- * 도구 호출 전 검사 - 위험한 도구면 interrupt
- */
 function checkToolCall(state: AgentStateType) {
   const lastMessage = state.messages[state.messages.length - 1] as AIMessage;
 
@@ -77,7 +82,6 @@ function checkToolCall(state: AgentStateType) {
   const toolCall = lastMessage.tool_calls[0];
 
   if (isDangerousTool(toolCall.name)) {
-    // 위험한 도구 - interrupt로 승인 요청
     const description = toolCall.name === 'bookRoom'
       ? `객실 예약: ${JSON.stringify(toolCall.args)}`
       : `예약 취소: ${JSON.stringify(toolCall.args)}`;
@@ -89,7 +93,6 @@ function checkToolCall(state: AgentStateType) {
       message: '이 작업을 진행하시겠습니까?',
     });
 
-    // 거부된 경우
     if (!approved) {
       return {
         messages: [new AIMessage('알겠습니다. 작업을 취소했습니다. 다른 도움이 필요하시면 말씀해주세요.')],
@@ -101,12 +104,8 @@ function checkToolCall(state: AgentStateType) {
   return { pendingToolCall: null };
 }
 
-// 도구 실행 노드
 const toolNode = new ToolNode(allTools);
 
-/**
- * 라우팅: 도구 호출 여부에 따라 분기
- */
 function shouldContinue(state: AgentStateType): 'tools' | 'end' {
   const lastMessage = state.messages[state.messages.length - 1] as AIMessage;
 
@@ -117,9 +116,6 @@ function shouldContinue(state: AgentStateType): 'tools' | 'end' {
   return 'end';
 }
 
-/**
- * 그래프 생성
- */
 function createAgentGraph() {
   const workflow = new StateGraph(AgentState)
     .addNode('agent', callModel)
