@@ -1,13 +1,9 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { startWorkflow, resumeWorkflow } from '@/lib/api';
+import { chat } from '@/lib/api';
 import { ApprovalDialog } from './ApprovalDialog';
-import type {
-  WorkflowStatus,
-  InterruptData,
-  WorkflowState,
-} from '@/types/workflow';
+import type { WorkflowStatus, InterruptData, WorkflowState } from '@/types/workflow';
 
 interface Message {
   id: string;
@@ -18,9 +14,6 @@ interface Message {
 
 /**
  * HITL 워크플로우 채팅 인터페이스
- *
- * 사용자가 메시지를 입력하면 LangGraph 워크플로우가 실행되고,
- * 중단점에서 승인 다이얼로그가 표시됩니다.
  */
 export function WorkflowChat() {
   const [input, setInput] = useState('');
@@ -51,69 +44,56 @@ export function WorkflowChat() {
     setInput('');
     setError(null);
 
-    // 사용자 메시지 추가
     addMessage('user', userMessage);
     setStatus('running');
-    addMessage('system', '🔄 워크플로우를 시작합니다...');
+    addMessage('system', '워크플로우를 시작합니다...');
 
     try {
-      const response = await startWorkflow(userMessage);
+      const response = await chat({ message: userMessage });
       setThreadId(response.threadId);
-      setWorkflowState(response.state || null);
+      setWorkflowState(response.state);
 
-      if (response.requiresApproval && response.interruptData) {
+      if (response.status === 'awaiting_approval' && response.interruptData) {
         setStatus('awaiting_approval');
         setInterruptData(response.interruptData);
-        addMessage('system', '⏸️ 작업 계획이 생성되었습니다. 승인이 필요합니다.');
+        addMessage('system', '작업 계획이 생성되었습니다. 승인이 필요합니다.');
       } else {
         setStatus('completed');
-        addMessage('result', response.state?.result || '작업이 완료되었습니다.');
+        addMessage('result', response.result || '작업이 완료되었습니다.');
       }
     } catch (err) {
       setStatus('error');
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
-      addMessage('system', `❌ 오류: ${errorMessage}`);
+      addMessage('system', `오류: ${errorMessage}`);
     }
   };
 
-  const handleApprove = async () => {
+  const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!threadId) return;
 
     setStatus('running');
-    addMessage('system', '✅ 승인됨. 작업을 실행합니다...');
+    addMessage('system', decision === 'approve' ? '승인됨. 작업을 실행합니다...' : '거부됨. 작업을 취소합니다...');
 
     try {
-      const response = await resumeWorkflow(threadId, 'approve');
-      setStatus('completed');
+      const response = await chat({ threadId, decision });
+      setWorkflowState(response.state);
       setInterruptData(null);
-      setWorkflowState(response.state || null);
-      addMessage('result', response.result || '작업이 완료되었습니다.');
+
+      if (response.status === 'awaiting_approval' && response.interruptData) {
+        // 또 다른 interrupt에 걸린 경우
+        setStatus('awaiting_approval');
+        setInterruptData(response.interruptData);
+        addMessage('system', '추가 승인이 필요합니다.');
+      } else {
+        setStatus('completed');
+        addMessage('result', response.result || '작업이 완료되었습니다.');
+      }
     } catch (err) {
       setStatus('error');
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
-      addMessage('system', `❌ 오류: ${errorMessage}`);
-    }
-  };
-
-  const handleReject = async () => {
-    if (!threadId) return;
-
-    setStatus('running');
-    addMessage('system', '❌ 거부됨. 작업을 취소합니다...');
-
-    try {
-      const response = await resumeWorkflow(threadId, 'reject');
-      setStatus('completed');
-      setInterruptData(null);
-      setWorkflowState(response.state || null);
-      addMessage('result', response.result || '작업이 취소되었습니다.');
-    } catch (err) {
-      setStatus('error');
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      setError(errorMessage);
-      addMessage('system', `❌ 오류: ${errorMessage}`);
+      addMessage('system', `오류: ${errorMessage}`);
     }
   };
 
@@ -138,7 +118,6 @@ export function WorkflowChat() {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {/* 상태 표시 */}
           <div className="flex items-center gap-2">
             <span
               className={`h-2 w-2 rounded-full ${
@@ -216,8 +195,8 @@ export function WorkflowChat() {
             {status === 'awaiting_approval' && interruptData && (
               <ApprovalDialog
                 interruptData={interruptData}
-                onApprove={handleApprove}
-                onReject={handleReject}
+                onApprove={() => handleDecision('approve')}
+                onReject={() => handleDecision('reject')}
                 isLoading={false}
               />
             )}

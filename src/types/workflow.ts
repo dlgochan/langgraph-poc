@@ -16,27 +16,15 @@ export interface InterruptData {
   options: string[];
 }
 
-export interface StartWorkflowResponse {
+/**
+ * 통합 Chat API 응답 타입
+ */
+export interface ChatResponse {
   threadId: string;
-  status: string;
-  requiresApproval: boolean;
+  status: 'awaiting_approval' | 'completed';
   interruptData?: InterruptData;
-  state?: WorkflowState;
-}
-
-export interface WorkflowStatusResponse {
-  threadId: string;
-  status: string;
-  requiresApproval: boolean;
-  interruptData?: InterruptData;
-  state?: WorkflowState;
-}
-
-export interface ResumeWorkflowResponse {
-  threadId: string;
-  status: string;
   result?: string;
-  state?: WorkflowState;
+  state: WorkflowState;
 }
 
 export type WorkflowStatus =

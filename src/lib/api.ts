@@ -1,14 +1,8 @@
 /**
  * LangGraph HITL API 클라이언트
- *
- * Next.js API Routes를 호출합니다.
  */
 
-import type {
-  StartWorkflowResponse,
-  WorkflowStatusResponse,
-  ResumeWorkflowResponse,
-} from '@/types/workflow';
+import type { ChatResponse } from '@/types/workflow';
 
 class APIError extends Error {
   constructor(
@@ -29,50 +23,24 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 /**
- * 새 워크플로우를 시작합니다.
+ * 통합 Chat API
+ * - message만 전달: 새 워크플로우 시작
+ * - threadId + decision 전달: 워크플로우 재개
  */
-export async function startWorkflow(message: string): Promise<StartWorkflowResponse> {
-  const response = await fetch('/api/workflow/start', {
+export async function chat(params: {
+  message?: string;
+  threadId?: string;
+  decision?: 'approve' | 'reject';
+}): Promise<ChatResponse> {
+  const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(params),
   });
 
-  return handleResponse<StartWorkflowResponse>(response);
-}
-
-/**
- * 워크플로우 상태를 조회합니다.
- */
-export async function getWorkflowStatus(threadId: string): Promise<WorkflowStatusResponse> {
-  const response = await fetch(`/api/workflow/${threadId}/status`, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
-
-  return handleResponse<WorkflowStatusResponse>(response);
-}
-
-/**
- * 중단된 워크플로우를 재개합니다.
- */
-export async function resumeWorkflow(
-  threadId: string,
-  decision: 'approve' | 'reject'
-): Promise<ResumeWorkflowResponse> {
-  const response = await fetch(`/api/workflow/${threadId}/resume`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ decision }),
-  });
-
-  return handleResponse<ResumeWorkflowResponse>(response);
+  return handleResponse<ChatResponse>(response);
 }
 
 export { APIError };
