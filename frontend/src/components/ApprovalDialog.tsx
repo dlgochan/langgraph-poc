@@ -28,7 +28,7 @@ export function ApprovalDialog({
     query: { label: '조회 작업', color: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200' },
   };
 
-  const taskType = taskTypeLabels[interruptData.task_type] || taskTypeLabels.query;
+  const taskType = taskTypeLabels[interruptData.taskType] || taskTypeLabels.query;
 
   return (
     <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 dark:border-amber-800 dark:bg-amber-950">
@@ -58,7 +58,7 @@ export function ApprovalDialog({
           실행 계획:
         </h4>
         <pre className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">
-          {interruptData.action_plan}
+          {interruptData.actionPlan}
         </pre>
       </div>
 

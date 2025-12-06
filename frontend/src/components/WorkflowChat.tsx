@@ -58,12 +58,12 @@ export function WorkflowChat() {
 
     try {
       const response = await startWorkflow(userMessage);
-      setThreadId(response.thread_id);
+      setThreadId(response.threadId);
       setWorkflowState(response.state || null);
 
-      if (response.requires_approval && response.interrupt_data) {
+      if (response.requiresApproval && response.interruptData) {
         setStatus('awaiting_approval');
-        setInterruptData(response.interrupt_data);
+        setInterruptData(response.interruptData);
         addMessage('system', '⏸️ 작업 계획이 생성되었습니다. 승인이 필요합니다.');
       } else {
         setStatus('completed');

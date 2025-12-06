@@ -3,37 +3,37 @@
  */
 
 export interface WorkflowState {
-  task_type?: string;
-  action_plan?: string;
-  current_step?: string;
+  taskType?: string;
+  actionPlan?: string;
+  currentStep?: string;
   result?: string;
 }
 
 export interface InterruptData {
   question: string;
-  action_plan: string;
-  task_type: string;
+  actionPlan: string;
+  taskType: string;
   options: string[];
 }
 
 export interface StartWorkflowResponse {
-  thread_id: string;
+  threadId: string;
   status: string;
-  requires_approval: boolean;
-  interrupt_data?: InterruptData;
+  requiresApproval: boolean;
+  interruptData?: InterruptData;
   state?: WorkflowState;
 }
 
 export interface WorkflowStatusResponse {
-  thread_id: string;
+  threadId: string;
   status: string;
-  requires_approval: boolean;
-  interrupt_data?: InterruptData;
+  requiresApproval: boolean;
+  interruptData?: InterruptData;
   state?: WorkflowState;
 }
 
 export interface ResumeWorkflowResponse {
-  thread_id: string;
+  threadId: string;
   status: string;
   result?: string;
   state?: WorkflowState;
